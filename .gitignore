@@ -1,0 +1,4 @@
+*.class
+out/classes/
+bills.dat.txt
+*.log
