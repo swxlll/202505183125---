@@ -1,9 +1,10 @@
-# 个人记账本（控制台版）— JavaSE 基础大作业
+# 个人记账本（控制台 + 图形界面）— JavaSE 基础大作业
 
 - 学号：202505183125
 - 个人变体：**变体 B（多账户）**
 - 水印：67c7b1fe（见 config.properties，程序内不硬编码）
 - 运行环境：JDK 11+
+- 加分项：**9.1 线上天气接口（+5）**、**9.2 自制图形界面（+8）**
 
 ## 一、功能清单
 
@@ -45,11 +46,11 @@
 ## 三、怎么编译运行
 
 ```bash
-# 编译（JDK 11+）
-javac --release 11 -encoding UTF-8 -d out/classes src/com/accountbook/*.java
+# 编译（JDK 11+，注意 WeatherKit.java 在 src 根目录、属于默认包，必须一起编译）
+javac --release 11 -encoding UTF-8 -d out/classes src/WeatherKit.java src/com/accountbook/*.java
 
-# 打包可执行 JAR
-jar cfe out/accountbook.jar com.accountbook.Main -C out/classes com
+# 打包可执行 JAR（-C out/classes . 会把默认包的 WeatherKit.class 一并打进 JAR 根目录）
+jar cfe out/accountbook.jar com.accountbook.Main -C out/classes .
 ```
 
 运行前把 `accountbook.jar`、`config.properties`、`202505183125.csv` 放同一目录：
@@ -65,18 +66,23 @@ Windows 下可双击 `start.bat`（自动处理编码）。若手动在 cmd 运�
 
 ```
 com.accountbook
-├── Main            # 菜单循环、输入校验、EOF 安全退出（保存后退出）
-├── Bill            # 账单实体（不可变对象，BigDecimal 金额）
-├── DateUtil        # 三种日期格式解析（STRICT 严格校验）
-├── CsvImporter     # CSV 导入 + 清洗 + 变体B去重（保留靠后）
-├── ImportResult    # 导入报告（总数/逐行丢弃原因/去重原因）
-├── AccountService  # 变体B：账户余额、转账、退出一致性校验
-├── Storage         # 持久化（文本格式保存/加载/合并）
-└── Config          # 读取 config.properties（学号/水印/路径）
+├── Main              # 菜单循环、输入校验、EOF 安全退出（保存后退出）
+├── Bill              # 账单实体（不可变对象，BigDecimal 金额）
+├── DateUtil          # 三种日期格式解析（STRICT 严格校验）
+├── CsvImporter       # CSV 导入 + 清洗 + 变体B去重（保留靠后）
+├── ImportResult      # 导入报告（总数/逐行丢弃原因/去重原因）
+├── AccountService    # 变体B：账户余额、转账、退出一致性校验
+├── Storage           # 持久化（文本格式保存/加载/合并）
+├── Config            # 读取 config.properties（学号/水印/路径/天气城市）
+├── WeatherService    # 加分项9.1：桥接教师 WeatherKit（反射调用 + 缓存 + 异常降级）
+└── AccountBookFrame  # 加分项9.2：Swing 图形界面（复用同一套业务类）
+
+src/WeatherKit.java   # 教师提供的天气工具类（默认包，未做任何修改）
 ```
 
 数据流转：CSV → CsvImporter（清洗/去重）→ List<Bill> → AccountService（统计/校验）
 → Storage（持久化）→ 下次启动 merge 合并。
+图形界面（AccountBookFrame）直接复用上述业务类，不复制逻辑，两种界面数字必然一致。
 
 ## 五、遇到的问题和解决过程
 
@@ -91,7 +97,14 @@ com.accountbook
 5. **EOF 死循环**：输入流关闭时 Scanner.nextLine 抛异常被捕获后循环重试导致死循环，
    改为统一 readLine() 检测 EOF，先保存数据再安全退出；
 6. **Excel 打开 CSV 乱码**：Excel 双击默认 GBK 解码 UTF-8 文件会乱码，
-   属查看工具问题，正确方式是"数据 → 从文本/CSV → 编码选 65001"。
+   属查看工具问题，正确方式是"数据 → 从文本/CSV → 编码选 65001"；
+7. **教师 WeatherKit 在默认包，无法直接 import**：`WeatherKit.java` 没有 package 声明，
+   而本项目在 `com.accountbook` 包下，编译报 "cannot find symbol"。
+   解决：不改教师源码，用 `Class.forName("WeatherKit")` + `Method.invoke` 反射调用，
+   并统一捕获 `ApiException`，断网/限流时只提示不崩溃；
+8. **图形界面阻塞控制台**：Swing 窗口是独立事件线程，控制台不能直接"等它关"。
+   解决：`invokeAndWait` 建窗 + `CountDownLatch` 等待 `windowClosed`，
+   关闭后再从 `bills.dat.txt` 重新加载数据，保证两种界面数据一致。
 
 ## 六、跨平台说明
 
@@ -103,10 +116,58 @@ com.accountbook
 
 ```
 202505183125-大作业/
-├── src/com/accountbook/   # 源代码（8 个类）
+├── src/
+│   ├── WeatherKit.java         # 教师提供（默认包，未修改）
+│   └── com/accountbook/        # 10 个类（含天气服务与图形界面）
 ├── out/
-│   ├── accountbook.jar    # 可执行 JAR
-│   └── config.properties  # 运行所需配置
-├── screenshots/           # Windows、Linux 运行截图
+│   ├── accountbook.jar         # 可执行 JAR（含 WeatherKit.class）
+│   ├── config.properties       # 运行所需配置（含 weather.city）
+│   ├── 202505183125.csv        # 教师下发的数据
+│   └── start.bat               # Windows 一键启动
+├── screenshots/                # windows.png / linux.png / gui.png
 └── README.md
 ```
+
+## 八、加分项实现
+
+### 9.1 线上天气接口（+5）
+
+- **只用教师提供的类**：`src/WeatherKit.java` 与教师下发文件**字节级一致**（MD5 相同），
+  没有重写任何网络请求代码；
+- **调用位置**：菜单 4「统计总览」打印 `【实时天气 · 统计页】…`，
+  菜单 3「手动记账」成功后打印同一条信息，作为本次记账的备注参考；
+- **城市名从配置读取**：`config.properties` 的 `weather.city`（默认北京），代码中不硬编码城市；
+- **异常处理**：WeatherKit 抛出的 `WeatherKit.ApiException`（断网 / 限流 429 / Key 无效 401）
+  在 `WeatherService` 里统一捕获，转成一行友好提示（如“查询失败：请求过于频繁（429），
+  请稍后再试（不影响记账功能）”），**程序绝不崩溃、记账流程不中断**；
+- **工程细节**：结果缓存 10 分钟避免频繁调用触发限流；图形界面里用 `SwingWorker`
+  后台查询，断网时窗口不会卡死。
+
+> **关于 JSON 解析**：教师类内部已用正则提取字段，本项目不再重复解析。
+> **关于默认包**：`WeatherKit` 位于默认包，Java 规范禁止命名包直接 import 默认包类型，
+> 因此 `WeatherService` 用反射调用其 `public static String now(String)`，
+> 既保持教师文件不被修改，也能正常使用（答辩可重点解释这一点）。
+
+**使用前需填 API Key**：打开 `src/WeatherKit.java` 第 32 行，把占位符换成自己的
+[和风天气](https://console.qweather.com) 免费 Key，再重新编译打包即可看到
+“北京 晴 3°C 湿度30% 东南风1级”这样的真实天气。未填 Key 时程序会显示
+“查询失败：…（不影响记账功能）”，功能不受影响。
+
+### 9.2 自制图形界面（+8）
+
+- 技术选型：**Swing**（零第三方依赖，JDK 自带，符合“无外部依赖”要求）；
+- 入口：控制台菜单 **9. 图形界面**，关闭窗口后自动回到控制台并重新加载数据，
+  **控制台功能完整保留**；
+- 可用功能（全部为真实业务，不是空壳）：
+  - 账单表格（点表头可排序，显示 id/日期/账户/类型/类别/金额/备注/固定支出）；
+  - 顶部统计卡片（收入 / 支出 / 结余，实时刷新）；
+  - 「导入 CSV」：复用 `CsvImporter`，弹窗显示 总行数 / 丢弃 / 去重 / 有效条数；
+  - 「记一笔」：表单对话框，id 唯一性、金额、日期、类别非空全部校验；
+  - 「转账」：选择转出/转入账户与金额，**生成两笔记录**，余额即时刷新；
+  - 「一致性校验」：弹窗显示四账户 `基线 / 本次变动 / 合计 [通过]`；
+  - 「保存」：写入 `bills.dat.txt`；关闭窗口时自动保存；
+  - 实时天气：后台线程查询，失败不影响界面操作；
+  - 底部状态栏：账户余额汇总 + 学号 + 水印。
+- 复用而非复制：GUI 直接调用 `CsvImporter / AccountService / Storage / WeatherService`，
+  与控制台共用同一套业务代码，因此两边算出的 50 条 / 16995.00 / 6567.16 完全一致；
+- 无图形环境（headless）时给出提示并返回控制台，不会因 `HeadlessException` 崩溃。
