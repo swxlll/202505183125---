@@ -26,6 +26,13 @@ public class Config {
     }
     public String getStorePath()  { return get("storeFile", "bills.dat.txt"); }
 
+    /** 加分项 9.1：天气城市名从配置文件读取（不在代码中硬编码城市） */
+    public String getWeatherCity() { return get("weather.city", ""); }
+    /** 是否启用天气展示（默认启用，可配成 false 以便离线演示） */
+    public boolean isWeatherEnabled() {
+        return !"false".equalsIgnoreCase(get("weather.enabled", "true"));
+    }
+
     public String get(String key, String def) {
         return props.getProperty(key, def);
     }
