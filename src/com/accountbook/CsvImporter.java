@@ -112,10 +112,14 @@ public class CsvImporter {
                 kept.add(b);
             } else {
                 Bill older = kept.get(prev);
+                // 分两行输出，避免单行过长在控制台/截图里被截断
                 result.dedupReasons.add(String.format(
-                        "id=%d 重复（变体B：保留靠后）→ 删除靠前的（%s %s %s），保留靠后的（%s %s %s）",
-                        b.getId(), older.getDate(), older.getAmount().toPlainString(), older.getNote(),
-                        b.getDate(), b.getAmount().toPlainString(), b.getNote()));
+                        "id=%d 重复（变体B：保留靠后），删除靠前的 %s %s",
+                        b.getId(), older.getDate(), older.getAmount().toPlainString()));
+                result.dedupReasons.add(String.format(
+                        "    保留靠后的 %s %s %s", b.getDate(),
+                        b.getAmount().toPlainString(), b.getNote()));
+                result.dedupRemoved++;
                 kept.set(prev, b); // 原位替换为靠后的一条
             }
         }

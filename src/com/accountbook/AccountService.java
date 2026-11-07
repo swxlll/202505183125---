@@ -51,30 +51,35 @@ public class AccountService {
 
     /**
      * 变体 B-iii：退出前一致性校验（真校验）。
-     * 校验 各账户当前余额 = 初始余额(程序启动时的余额快照) + 本次会话新增账单的收支合计。
-     * 若两条独立路径算出结果不一致，说明程序内部出现了数据漂移，必须提示。
+     * 校验 各账户当前余额 = 基线余额 + 本次会话变动（手动记账/转账等新增记录）。
+     * 基线为"最后一次导入完成后的快照"，因此导入本身不会被误判为变动。
      */
-    public boolean checkConsistency(List<Bill> current, List<Bill> initial) {
+    public boolean checkConsistency(List<Bill> current, List<Bill> baseline) {
         Map<String, BigDecimal> now = balances(current);
-        Map<String, BigDecimal> base = balances(initial);
-        // 本次会话新增（或未被快照包含）的账单
+        Map<String, BigDecimal> base = balances(baseline);
+        // 本次会话相对基线新增的账单（用对象身份判断：基线中的对象不再计入变动）
         Map<String, BigDecimal> delta = new LinkedHashMap<>();
         for (Bill b : current) {
-            boolean inInitial = false;
-            for (Bill o : initial) if (o == b) { inInitial = true; break; }
-            if (!inInitial) delta.merge(b.getAccount(), b.signedAmount(), BigDecimal::add);
+            boolean inBaseline = false;
+            for (Bill o : baseline) if (o == b) { inBaseline = true; break; }
+            if (!inBaseline) delta.merge(b.getAccount(), b.signedAmount(), BigDecimal::add);
         }
         boolean ok = true;
         System.out.println("===== 退出前一致性校验 =====");
+        System.out.println("校验公式：当前余额 = 基线余额 + 本次变动");
         for (String account : now.keySet()) {
-            BigDecimal expect = base.getOrDefault(account, BigDecimal.ZERO)
-                    .add(delta.getOrDefault(account, BigDecimal.ZERO));
+            BigDecimal baseAmt = base.getOrDefault(account, BigDecimal.ZERO);
+            BigDecimal deltaAmt = delta.getOrDefault(account, BigDecimal.ZERO);
+            BigDecimal expect = baseAmt.add(deltaAmt);
             boolean same = now.get(account).compareTo(expect) == 0;
             if (!same) ok = false;
-            System.out.println(account + ": 余额=" + now.get(account).toPlainString()
-                    + " | 初始余额 + 本次收支 = " + expect.toPlainString()
-                    + (same ? " 校验通过" : " 【不一致！】"));
+            System.out.println(account + ": 当前余额=" + now.get(account).toPlainString()
+                    + " | 基线=" + baseAmt.toPlainString()
+                    + " 本次变动=" + (deltaAmt.signum() >= 0 ? "+" : "") + deltaAmt.toPlainString()
+                    + " 合计=" + expect.toPlainString()
+                    + (same ? " [通过]" : " [不一致！]"));
         }
+        System.out.println(ok ? "结论：各账户账实相符，校验通过。" : "结论：存在不一致，请检查数据！");
         return ok;
     }
 

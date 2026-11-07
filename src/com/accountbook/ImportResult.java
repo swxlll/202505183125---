@@ -18,13 +18,15 @@ public class ImportResult {
 
     /** 去重阶段单独报告（不属于"脏数据丢弃"，单独列出更清晰） */
     public final List<String> dedupReasons = new ArrayList<>();
+    /** 被去重删除的实际行数（一条删除可能对应多行说明文字） */
+    public int dedupRemoved;
 
     public void printReport() {
         System.out.println("===== 导入结果 =====");
         System.out.println("总行数(不含表头): " + totalLines);
         System.out.println("脏数据丢弃: " + discarded() + " 行");
         for (String r : discardReasons) System.out.println("  [丢弃] " + r);
-        System.out.println("去重删除: " + dedupReasons.size() + " 行");
+        System.out.println("去重删除: " + dedupRemoved + " 行");
         for (String r : dedupReasons) System.out.println("  [去重] " + r);
         System.out.println("最终有效账单: " + bills.size() + " 条");
     }
