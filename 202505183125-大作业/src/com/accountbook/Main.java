@@ -20,7 +20,7 @@ public class Main {
     /** 常量集中定义，避免魔法数字（评分项：工程质量） */
     private static final int PAGE_SIZE = 10;          // 账单浏览每页条数
     private static final int BASE_ID = 1000;          // 自动生成 id 的基准
-    private static final int MENU_MIN = 0, MENU_MAX = 8;
+    private static final int MENU_MIN = 0, MENU_MAX = 9;
     private static final String[] ACCOUNTS = {"微信", "支付宝", "校园卡", "银行卡"};
     private static final String[] TYPES = {"收入", "支出"};
     private static final String[] YES_NO = {"Y", "N"};
@@ -52,7 +52,8 @@ public class Main {
 
         storage = new Storage(config.getStorePath());
         bills = new ArrayList<Bill>(storage.load()); // 启动时先加载持久化数据
-        // 初始快照（用于退出时一致性校验：当前余额 = 初始余额 + 本次会话新增收支）
+        // 初始快照：基线为"启动时的持久化数据"，导入完成后会刷新为"导入后的数据"，
+        // 使退出校验只针对本次会话真正新增的变动（手动记账/转账），而不是导入的数据。
         final List<Bill> initialBills = new ArrayList<Bill>(bills);
 
         if (System.getProperty("os.name", "").toLowerCase().contains("win")
@@ -72,15 +73,33 @@ public class Main {
                         r.printReport();
                         // 与已持久化的数据合并（导入行 id 不覆盖已有）
                         bills = Storage.merge(bills, r.bills);
+                        // 导入的数据视为基线下限：刷新快照，使退出校验只针对本次会话的后续变动
+                        initialBills.clear();
+                        initialBills.addAll(bills);
+                        System.out.println("（一致性校验基线已更新为导入后的 "
+                                + bills.size() + " 条账单）");
                         break;
                     }
                     case 2: browse(bills); break;      // 账单浏览
-                    case 3: addManual(bills); break;   // 手动记账
-                    case 4: new AccountService().printSummary(bills); break; // 统计总览
+                    case 3: addManual(bills, config); break;   // 手动记账
+                    case 4: // 统计总览（加分项 9.1：附带实时天气）
+                        printWeather(config, "统计页");
+                        new AccountService().printSummary(bills);
+                        break;
                     case 5: new AccountService().printBalances(bills); break; // 变体B：账户余额
                     case 6: doTransfer(bills); break;  // 变体B：转账
-                    case 7: saveAndCheck(config, storage, bills); break; // 保存+一致性校验
+                    case 7: saveAndCheck(config, storage, bills, initialBills); break; // 保存+一致性校验
                     case 8: about(config); break;      // 关于
+                    case 9: // 加分项 9.2：图形界面（关闭窗口后回到控制台，数据重新加载）
+                        saveQuietly();
+                        if (AccountBookFrame.show(config, storage)) {
+                            bills = new ArrayList<Bill>(storage.load());
+                            initialBills.clear();
+                            initialBills.addAll(bills);
+                            System.out.println("（已从 " + config.getStorePath()
+                                    + " 重新加载 " + bills.size() + " 条账单）");
+                        }
+                        break;
                     case 0: // 退出：先校验再保存（保存失败也要给出提示，不允许崩溃）
                         new AccountService().checkConsistency(bills, initialBills);
                         saveQuietly();
@@ -136,6 +155,7 @@ public class Main {
         System.out.println("========== 个人记账本（" + config.getStudentId() + "） ==========");
         System.out.println("1. 导入数据   2. 账单浏览   3. 手动记账   4. 统计总览");
         System.out.println("5. 账户余额   6. 账户转账   7. 保存数据   8. 关于     0. 退出");
+        System.out.println("9. 图形界面（加分项 9.2，窗口操作，控制台功能保留）");
     }
 
     /** 账单浏览：按日期排序真分页（每页 PAGE_SIZE 条），空列表友好提示 */
@@ -162,7 +182,7 @@ public class Main {
     }
 
     /** 手动记账：逐字段输入，全部校验，非法重输 */
-    private static void addManual(List<Bill> list) {
+    private static void addManual(List<Bill> list, Config config) {
         int id;
         while (true) {
             id = readInt("编号id: ", 1, Integer.MAX_VALUE);
@@ -178,6 +198,17 @@ public class Main {
         boolean rec = readChoice("固定支出(Y/N)", YES_NO).equals("Y");
         list.add(new Bill(id, date, account, type, category, amount, note, rec));
         System.out.println("已添加: " + id);
+        printWeather(config, "已作为本次记账的备注参考");
+    }
+
+    /**
+     * 加分项 9.1：展示实时天气。城市名来自 config.properties（weather.city），
+     * 实际请求由教师提供的 WeatherKit.now(城市) 完成；失败时只打印一行提示，绝不中断流程。
+     */
+    private static void printWeather(Config config, String scene) {
+        if (!config.isWeatherEnabled()) return;
+        System.out.println("【实时天气 · " + scene + "】"
+                + WeatherService.fetch(config.getWeatherCity()));
     }
 
     /** 变体B-ii：转账生成两笔记录，自动挑选未占用的连续 id */
@@ -200,8 +231,9 @@ public class Main {
         System.out.println("转账完成（生成两笔记录: " + pair[0].getId() + ", " + pair[1].getId() + "）");
     }
 
-    private static void saveAndCheck(Config config, Storage storage, List<Bill> list) {
-        new AccountService().checkConsistency(list, java.util.Collections.<Bill>emptyList());
+    private static void saveAndCheck(Config config, Storage storage,
+                                     List<Bill> list, List<Bill> baseline) {
+        new AccountService().checkConsistency(list, baseline);
         try {
             storage.save(list);
             System.out.println("已保存到 " + config.getStorePath());
