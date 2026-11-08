@@ -32,6 +32,10 @@ public class Config {
     public boolean isWeatherEnabled() {
         return !"false".equalsIgnoreCase(get("weather.enabled", "true"));
     }
+    /** 加分项 9.1：和风天气专属 API Host（控制台 → 设置 → API Host），可留空 */
+    public String getWeatherHost() { return get("weather.host", "").trim(); }
+    /** 加分项 9.1：和风天气 API Key（禁止硬编码在源码中，只放配置文件） */
+    public String getWeatherKey() { return get("weather.key", "").trim(); }
 
     public String get(String key, String def) {
         return props.getProperty(key, def);

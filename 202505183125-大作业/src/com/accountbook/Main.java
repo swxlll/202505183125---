@@ -49,9 +49,16 @@ public class Main {
             System.out.println("[错误] 无法读取 config.properties: " + e.getMessage());
             return;
         }
+        // 加分项 9.1：把天气配置注入教师类（必须在任何天气查询之前执行）
+        WeatherService.install(config);
 
         storage = new Storage(config.getStorePath());
         bills = new ArrayList<Bill>(storage.load()); // 启动时先加载持久化数据
+        if (!bills.isEmpty()) {
+            System.out.println("（已加载历史数据 " + bills.size() + " 条："
+                    + config.getStorePath() + (storage.getLastSkippedLines() > 0
+                    ? "，另有 " + storage.getLastSkippedLines() + " 行损坏已跳过" : "") + "）");
+        }
         // 初始快照：基线为"启动时的持久化数据"，导入完成后会刷新为"导入后的数据"，
         // 使退出校验只针对本次会话真正新增的变动（手动记账/转账），而不是导入的数据。
         final List<Bill> initialBills = new ArrayList<Bill>(bills);
@@ -82,10 +89,16 @@ public class Main {
                     }
                     case 2: browse(bills); break;      // 账单浏览
                     case 3: addManual(bills, config); break;   // 手动记账
-                    case 4: // 统计总览（加分项 9.1：附带实时天气）
+                    case 4: { // 统计总览 + 明细报表 + 可选导出（加分项 9.1：附带实时天气）
                         printWeather(config, "统计页");
-                        new AccountService().printSummary(bills);
+                        AccountService svc = new AccountService();
+                        svc.printSummary(bills);
+                        svc.printMonthly(bills);
+                        svc.printCategoryTop(bills, 5);
+                        svc.printBalances(bills);
+                        askExport(bills);
                         break;
+                    }
                     case 5: new AccountService().printBalances(bills); break; // 变体B：账户余额
                     case 6: doTransfer(bills); break;  // 变体B：转账
                     case 7: saveAndCheck(config, storage, bills, initialBills); break; // 保存+一致性校验
@@ -158,27 +171,68 @@ public class Main {
         System.out.println("9. 图形界面（加分项 9.2，窗口操作，控制台功能保留）");
     }
 
-    /** 账单浏览：按日期排序真分页（每页 PAGE_SIZE 条），空列表友好提示 */
+    /** 账单浏览：先筛选（可全部跳过），再按日期排序真分页（每页 PAGE_SIZE 条），空列表友好提示 */
     private static void browse(List<Bill> list) {
         if (list.isEmpty()) {
             System.out.println("（暂无账单，请先导入或手动记账）");
             return;
         }
-        List<Bill> sorted = new ArrayList<Bill>(list);
-        sorted.sort(Comparator.comparing(Bill::getDate).thenComparing(Bill::getId));
+        BillQuery query = askQuery();
+        List<Bill> sorted = query.apply(list);
+        if (sorted.isEmpty()) {
+            System.out.println("（没有符合条件的账单：" + query.describe() + "）");
+            return;
+        }
         int totalPages = (sorted.size() + PAGE_SIZE - 1) / PAGE_SIZE;
         int page = 1;
         while (true) {
             int from = (page - 1) * PAGE_SIZE;
             int to = Math.min(from + PAGE_SIZE, sorted.size());
-            System.out.println("----- 第 " + page + "/" + totalPages + " 页 -----");
+            System.out.println("----- 第 " + page + "/" + totalPages + " 页 | 筛选：" + query.describe()
+                    + " | 共 " + sorted.size() + " 条 -----");
+            System.out.println(String.format("%-6s %-11s %-6s %-4s %-6s %11s  %s",
+                    "id", "日期", "账户", "类型", "类别", "金额", "备注"));
             for (int i = from; i < to; i++) System.out.println(sorted.get(i));
-            System.out.print("n=下一页 p=上一页 q=返回: ");
-            String cmd = readLine().trim();
+            System.out.println("本页小计：" + subtotal(sorted.subList(from, to)));
+            System.out.print("n=下一页 p=上一页 f=首页 l=末页 g=跳页 q=返回: ");
+            String cmd = readLine().trim().toLowerCase();
             if (cmd.equals("n") && page < totalPages) page++;
             else if (cmd.equals("p") && page > 1) page--;
+            else if (cmd.equals("f")) page = 1;
+            else if (cmd.equals("l")) page = totalPages;
+            else if (cmd.equals("g")) page = readInt("跳转到第几页(1~" + totalPages + "): ", 1, totalPages);
             else if (cmd.equals("q")) return;
+            else System.out.println("未知指令，可用：n / p / f / l / g / q");
         }
+    }
+
+    /** 筛选条件录入：全部可以回车跳过，默认不限制（不改变原有"直接看全部账单"的习惯） */
+    private static BillQuery askQuery() {
+        BillQuery q = new BillQuery();
+        System.out.println("----- 账单筛选（直接回车 = 不限制）-----");
+        int a = readIntAllowEmpty("账户(1微信 2支付宝 3校园卡 4银行卡 0全部): ", 0, 4);
+        if (a >= 1) q.account(ACCOUNTS[a - 1]);
+        int t = readIntAllowEmpty("类型(1收入 2支出 0全部): ", 0, 2);
+        if (t >= 1) q.type(TYPES[t - 1]);
+        String c = readLineAllowEmpty("类别关键字(回车跳过): ");
+        if (!c.isEmpty()) q.category(c);
+        String k = readLineAllowEmpty("备注关键字(回车跳过): ");
+        if (!k.isEmpty()) q.keyword(k);
+        LocalDate from = readDateAllowEmpty("起始日期(yyyy-M-d, 回车不限): ");
+        LocalDate to = readDateAllowEmpty("结束日期(yyyy-M-d, 回车不限): ");
+        q.range(from, to);
+        return q;
+    }
+
+    /** 当前页（或筛选结果）小计，让"筛选"这件事在数字上也能自证 */
+    private static String subtotal(List<Bill> part) {
+        BigDecimal income = BigDecimal.ZERO, expense = BigDecimal.ZERO;
+        for (Bill b : part) {
+            if ("收入".equals(b.getType())) income = income.add(b.getAmount());
+            else expense = expense.add(b.getAmount());
+        }
+        return "收入 " + income.toPlainString() + " / 支出 " + expense.toPlainString()
+                + " / 结余 " + income.subtract(expense).toPlainString();
     }
 
     /** 手动记账：逐字段输入，全部校验，非法重输 */
@@ -209,6 +263,22 @@ public class Main {
         if (!config.isWeatherEnabled()) return;
         System.out.println("【实时天气 · " + scene + "】"
                 + WeatherService.fetch(config.getWeatherCity()));
+    }
+
+    /** 统计页可选导出：回车默认"不导出"，避免每次看统计都在目录里堆文件 */
+    private static void askExport(List<Bill> bills) {
+        System.out.print("是否导出 CSV 报表？(y/N): ");
+        String s = readLine().trim();
+        if (!"y".equalsIgnoreCase(s)) return;
+        try {
+            java.nio.file.Path detail = Exporter.exportBills(bills);
+            java.nio.file.Path summary = Exporter.exportSummary(bills);
+            System.out.println("已导出（UTF-8 带 BOM，Excel 双击可直接打开）：");
+            System.out.println("  " + detail.toAbsolutePath());
+            System.out.println("  " + summary.toAbsolutePath());
+        } catch (IOException e) {
+            System.out.println("[错误] 导出失败: " + e.getMessage());
+        }
     }
 
     /** 变体B-ii：转账生成两笔记录，自动挑选未占用的连续 id */
@@ -274,6 +344,40 @@ public class Main {
                 return LocalDate.parse(readLine().trim(), IN_DATE);
             } catch (Exception e) {
                 System.out.println("日期非法，请按 yyyy-M-d 输入（如 2026-4-1）。");
+            }
+        }
+    }
+
+    /** 允许为空的选择项：回车返回 -1（= 不限制），非法输入重输 */
+    private static int readIntAllowEmpty(String prompt, int min, int max) {
+        while (true) {
+            System.out.print(prompt);
+            String s = readLine().trim();
+            if (s.isEmpty()) return -1;
+            try {
+                int v = Integer.parseInt(s);
+                if (v >= min && v <= max) return v;
+            } catch (NumberFormatException ignored) { }
+            System.out.println("输入非法，请输入 " + min + "~" + max + " 的整数（回车跳过）。");
+        }
+    }
+
+    /** 允许为空的文本项 */
+    private static String readLineAllowEmpty(String prompt) {
+        System.out.print(prompt);
+        return readLine().trim();
+    }
+
+    /** 允许为空的日期项：回车返回 null（= 该端不限），非法日期重输 */
+    private static LocalDate readDateAllowEmpty(String prompt) {
+        while (true) {
+            System.out.print(prompt);
+            String s = readLine().trim();
+            if (s.isEmpty()) return null;
+            try {
+                return LocalDate.parse(s, IN_DATE);
+            } catch (Exception e) {
+                System.out.println("日期非法，请按 yyyy-M-d 输入（如 2026-4-1），或回车跳过。");
             }
         }
     }

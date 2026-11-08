@@ -39,6 +39,87 @@ public class AccountService {
     }
 
     /**
+     * 支出按类别汇总，金额降序。
+     * 用 LinkedHashMap 保序，保证每次打印顺序一致（截图对比、答辩复现都稳定）。
+     */
+    public Map<String, BigDecimal> expenseByCategory(List<Bill> bills) {
+        Map<String, BigDecimal> map = new LinkedHashMap<String, BigDecimal>();
+        for (Bill b : bills) {
+            if ("支出".equals(b.getType())) {
+                map.merge(b.getCategory(), b.getAmount(), BigDecimal::add);
+            }
+        }
+        java.util.List<Map.Entry<String, BigDecimal>> list =
+                new java.util.ArrayList<Map.Entry<String, BigDecimal>>(map.entrySet());
+        list.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+        Map<String, BigDecimal> sorted = new LinkedHashMap<String, BigDecimal>();
+        for (Map.Entry<String, BigDecimal> e : list) sorted.put(e.getKey(), e.getValue());
+        return sorted;
+    }
+
+    /** 按月汇总：key = yyyy-MM（TreeMap 天然按月份升序），value = {收入, 支出} */
+    public Map<String, BigDecimal[]> byMonth(List<Bill> bills) {
+        Map<String, BigDecimal[]> map = new java.util.TreeMap<String, BigDecimal[]>();
+        for (Bill b : bills) {
+            String key = b.getDate().toString().substring(0, 7); // ISO 日期固定 yyyy-MM-dd，取前 7 位即月份
+            BigDecimal[] v = map.get(key);
+            if (v == null) {
+                v = new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO};
+                map.put(key, v);
+            }
+            if ("收入".equals(b.getType())) v[0] = v[0].add(b.getAmount());
+            else v[1] = v[1].add(b.getAmount());
+        }
+        return map;
+    }
+
+    /** 打印"支出类别占比"（Top N，N<=0 表示全部），占比 = 类别金额 / 支出总额 */
+    public void printCategoryTop(List<Bill> bills, int topN) {
+        Map<String, BigDecimal> map = expenseByCategory(bills);
+        BigDecimal total = BigDecimal.ZERO;
+        for (BigDecimal v : map.values()) total = total.add(v);
+
+        System.out.println("===== 支出类别汇总 =====");
+        if (map.isEmpty()) {
+            System.out.println("（暂无支出记录）");
+            return;
+        }
+        System.out.println(String.format("%-8s %12s %8s", "类别", "金额", "占比"));
+        int i = 0;
+        for (Map.Entry<String, BigDecimal> e : map.entrySet()) {
+            if (topN > 0 && i++ >= topN) break;
+            System.out.println(String.format("%-8s %12s %7s%%",
+                    e.getKey(), e.getValue().toPlainString(), percent(e.getValue(), total)));
+        }
+        System.out.println("合计     " + String.format("%12s", total.toPlainString()));
+    }
+
+    /** 打印按月收支表，便于看"哪个月花超了" */
+    public void printMonthly(List<Bill> bills) {
+        System.out.println("===== 按月汇总 =====");
+        Map<String, BigDecimal[]> map = byMonth(bills);
+        if (map.isEmpty()) {
+            System.out.println("（暂无记录）");
+            return;
+        }
+        System.out.println(String.format("%-9s %12s %12s %12s", "月份", "收入", "支出", "结余"));
+        for (Map.Entry<String, BigDecimal[]> e : map.entrySet()) {
+            BigDecimal in = e.getValue()[0], out = e.getValue()[1];
+            System.out.println(String.format("%-9s %12s %12s %12s",
+                    e.getKey(), in.toPlainString(), out.toPlainString(),
+                    in.subtract(out).toPlainString()));
+        }
+    }
+
+    /** 百分比：保留 1 位小数；分母为 0 时返回 "0.0"，避免 ArithmeticException */
+    private static String percent(BigDecimal part, BigDecimal total) {
+        if (total == null || total.signum() == 0) return "0.0";
+        return part.multiply(BigDecimal.valueOf(100))
+                .divide(total, 1, java.math.RoundingMode.HALF_UP)
+                .toPlainString();
+    }
+
+    /**
      * 变体 B-ii：账户间转账。生成两笔对应记录（转出账户一笔支出、转入账户一笔收入），
      * 不直接修改余额数字。返回生成的两笔账单，调用方负责加入账单列表。
      */
