@@ -57,6 +57,8 @@ import java.util.concurrent.CountDownLatch;
  */
 public final class AccountBookFrame extends JFrame {
 
+    private static final long serialVersionUID = 1L;
+
     private static final String[] ACCOUNTS = {"微信", "支付宝", "校园卡", "银行卡"};
     private static final String[] TYPES = {"收入", "支出"};
     private static final String[] COLUMNS =
@@ -92,6 +94,20 @@ public final class AccountBookFrame extends JFrame {
 
         this.model = new DefaultTableModel(COLUMNS, 0) {
             @Override public boolean isCellEditable(int row, int column) { return false; }
+            /**
+             * 必须声明每列的真实类型：否则一律是 Object.class，
+             * TableRowSorter 会退化成按<b>文本</b>比较，金额 "9.00" 会排在 "10000.00" 后面、
+            * id "999" 会排在 "1000" 后面。声明后 id/日期/金额都按真实类型排序。
+             */
+            @Override public Class<?> getColumnClass(int column) {
+                switch (column) {
+                    case 0: return Integer.class;
+                    case 1: return LocalDate.class;
+                    case 5: return BigDecimal.class;
+                    case 8: return Bill.class;
+                    default: return String.class;
+                }
+            }
         };
         this.table = new JTable(model);
         table.setRowHeight(22);
@@ -144,6 +160,9 @@ public final class AccountBookFrame extends JFrame {
 
     /** 金额列渲染器：BigDecimal -> 右对齐文本；收入红、支出绿（中国习惯，涨红跌绿） */
     private final class AmountRenderer extends DefaultTableCellRenderer {
+
+        private static final long serialVersionUID = 1L;
+
         @Override public Component getTableCellRendererComponent(JTable t, Object value, boolean selected,
                                                                 boolean focus, int row, int column) {
             String text = value instanceof BigDecimal
@@ -336,12 +355,20 @@ public final class AccountBookFrame extends JFrame {
     private void doImport() {
         try {
             ImportResult r = new CsvImporter().importFile(config.getCsvPath());
+            // 与已有数据按 id 合并（保留已手动记的账、转账记录），不能直接清空重建
+            List<Bill> merged = Storage.merge(new ArrayList<Bill>(data), r.bills);
+            int kept = merged.size() - r.bills.size(); // 合并后比导入结果多出来的，就是原有数据
             data.clear();
-            data.addAll(Storage.merge(new ArrayList<Bill>(), r.bills));
+            data.addAll(merged);
+            // 导入完成后刷新一致性校验基线：导入本身不算"本次会话的变动"
+            baseline.clear();
+            baseline.addAll(data);
             refreshTable();
+            applyFilter();
             refreshStats();
             showMessage("导入完成\n总行数：" + r.totalLines + "\n丢弃：" + r.discarded()
-                    + " 行\n去重删除：" + r.dedupRemoved + " 行\n有效：" + data.size() + " 条");
+                    + " 行\n去重删除：" + r.dedupRemoved + " 行\n本次导入有效：" + r.bills.size()
+                    + " 条\n保留原有记录：" + Math.max(kept, 0) + " 条\n当前合计：" + data.size() + " 条");
         } catch (IOException e) {
             showMessage("导入失败：" + e.getMessage() + "\n请确认 " + config.getCsvPath() + " 与本程序在同一目录。");
         }
@@ -365,17 +392,18 @@ public final class AccountBookFrame extends JFrame {
         if (!showForm("记一笔", form)) return;
 
         int id;
-        BigDecimal amount;
-        LocalDate date;
         try {
             id = Integer.parseInt(idField.getText().trim());
-            amount = new BigDecimal(amountField.getText().trim());
-            date = LocalDate.parse(dateField.getText().trim());
-        } catch (RuntimeException e) {
-            showMessage("输入有误：id 需为整数、日期形如 2026-4-1、金额需为数字。");
+        } catch (NumberFormatException e) {
+            showMessage("编号 id 需为整数。");
             return;
         }
-        if (amount.signum() < 0) { showMessage("金额不能为负。"); return; }
+        if (id <= 0) { showMessage("编号 id 必须大于 0。"); return; }
+        // 金额与日期统一走控制台同一套校验，避免两个界面规则不一致
+        BigDecimal amount = ImportResult.parseAmount(amountField.getText());
+        if (amount == null) { showMessage("金额非法：须为非负数字、最多两位小数。"); return; }
+        LocalDate date = DateUtil.parse(dateField.getText());
+        if (date == null) { showMessage("日期非法：支持 2026-1-5 / 2026/1/5 / 2026年1月5日。"); return; }
         if (categoryField.getText().trim().isEmpty()) { showMessage("类别不能为空。"); return; }
         for (Bill b : data) if (b.getId() == id) { showMessage("id " + id + " 已存在，请换一个。"); return; }
 
@@ -384,8 +412,10 @@ public final class AccountBookFrame extends JFrame {
                 noteField.getText().trim().isEmpty() ? "无" : noteField.getText().trim(),
                 recBox.isSelected()));
         refreshTable();
+        applyFilter();
         refreshStats();
-        statusLabel.setText("已添加账单 id=" + id + "；实时天气可作为备注参考：" + weatherLabel.getText());
+        statusLabel.setText("已添加账单 id=" + id + "（金额 " + amount.toPlainString() + "）"
+                + "  |  " + statusLabel.getText());
     }
 
     private void doTransfer() {
@@ -402,16 +432,13 @@ public final class AccountBookFrame extends JFrame {
         String from = (String) fromBox.getSelectedItem();
         String to = (String) toBox.getSelectedItem();
         if (from.equals(to)) { showMessage("转出与转入不能是同一账户。"); return; }
-        BigDecimal amount;
-        LocalDate date;
-        try {
-            amount = new BigDecimal(amountField.getText().trim());
-            date = LocalDate.parse(dateField.getText().trim());
-        } catch (RuntimeException e) {
-            showMessage("金额或日期格式有误。");
+        BigDecimal amount = ImportResult.parseAmount(amountField.getText());
+        if (amount == null || amount.signum() <= 0) {
+            showMessage("转账金额非法：须为大于 0 的数字、最多两位小数。");
             return;
         }
-        if (amount.signum() <= 0) { showMessage("转账金额必须大于 0。"); return; }
+        LocalDate date = DateUtil.parse(dateField.getText());
+        if (date == null) { showMessage("日期非法：支持 2026-1-5 / 2026/1/5 / 2026年1月5日。"); return; }
 
         int newId = Integer.parseInt(nextId());
         while (containsId(newId) || containsId(newId + 1)) newId++;
@@ -419,6 +446,7 @@ public final class AccountBookFrame extends JFrame {
         data.add(pair[0]);
         data.add(pair[1]);
         refreshTable();
+        applyFilter();
         refreshStats();
         showMessage("转账完成：" + from + " -" + amount.toPlainString() + " → "
                 + to + " +" + amount.toPlainString() + "\n生成两笔记录 id=" + pair[0].getId()
@@ -542,8 +570,8 @@ public final class AccountBookFrame extends JFrame {
                     String text = get();
                     // 未配置时顶栏只放一句短的，完整原因（去哪儿填什么）放 tooltip，避免顶栏被长文案撑乱
                     String shown;
-                    if (text.startsWith("专属 API Host") || text.startsWith("未配置")) {
-                        shown = "未配置（填 config.properties 的 weather.host / weather.key 后自动显示）";
+                    if (text.startsWith("未配置")) {
+                        shown = "未配置（填 out/config.properties 的 weather.host 与 weather.key 后重启）";
                     } else {
                         // 顶栏空间有限：超长提示截断显示，鼠标悬停看完整原因
                         shown = text.length() > 58 ? text.substring(0, 56) + "…" : text;

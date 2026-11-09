@@ -48,7 +48,15 @@ public final class SelfTest {
         eq("金额 abc 应拒绝", null, ImportResult.parseAmount("abc"));
 
         // ---- 3. 导入清洗结果（依赖真实 CSV，不做任何造数） ----
-        Config config = new Config("config.properties");
+        Config config;
+        try {
+            config = new Config("config.properties");
+        } catch (IOException e) {
+            System.out.println("[中止] 当前目录没有 config.properties，请先 cd 到 out 目录再运行自检：");
+            System.out.println("       cd out && java -cp accountbook.jar com.accountbook.SelfTest");
+            System.exit(2);
+            return;
+        }
         Path csv = Paths.get(config.getCsvPath());
         if (!Files.exists(csv)) {
             System.out.println("[中止] 找不到 " + csv.toAbsolutePath()
@@ -152,8 +160,86 @@ public final class SelfTest {
             if (exported != null) Files.deleteIfExists(exported);
         }
 
+        // ---- 12. 编码兼容：记事本存成 GBK 的 CSV 也要能正确导入 ----
+        // 说明：这里写的是"自检夹具"（临时文件，跑完立即删除），不参与任何交付数据，
+        //      也不是为了"造一份好看的数据"，只是为了证明编码回退这条分支真的有效。
+        Path gbkCsv = Paths.get("selftest-gbk.csv");
+        try {
+            List<String> gbkLines = new ArrayList<String>();
+            gbkLines.add("id,date,account,type,category,amount,note,recurring");
+            gbkLines.add("2001,2026/1/5,微信,支出,餐饮,10.00,午饭,N");
+            Files.write(gbkCsv, gbkLines, java.nio.charset.Charset.forName("GBK"));
+            ImportResult gbkResult = quietlyImport(gbkCsv);
+            eq("GBK 编码的 CSV 仍能导入", 1, gbkResult.bills.size());
+            eq("GBK 文件里的中文没有乱码", "餐饮",
+                    gbkResult.bills.isEmpty() ? null : gbkResult.bills.get(0).getCategory());
+        } finally {
+            Files.deleteIfExists(gbkCsv);
+        }
+
+        // ---- 13. 表头识别：没有表头的 CSV，第一行不能被当表头吃掉 ----
+        Path noHeader = Paths.get("selftest-noheader.csv");
+        try {
+            Files.write(noHeader, java.util.Arrays.asList(
+                    "3001,2026-01-05,微信,收入,工资,100.00,无,N"), StandardCharsets.UTF_8);
+            ImportResult nh = quietlyImport(noHeader);
+            eq("无表头 CSV 的首行不被丢弃", 1, nh.bills.size());
+        } finally {
+            Files.deleteIfExists(noHeader);
+        }
+
+        // ---- 14. 数据文件损坏行容错：只跳过坏行，不影响好行 ----
+        Path badData = Paths.get("selftest-bad.dat.txt");
+        try {
+            Files.write(badData, java.util.Arrays.asList(
+                    "1001|2026-01-05|微信|支出|餐饮|10.00|午饭|N",
+                    "1002|2026-01-05|微信|转账中|餐饮|10.00|类型非法|N",
+                    "1003|2026-01-05|微信|支出|餐饮|-5.00|负金额|N",
+                    "1004|2026-99-99|微信|支出|餐饮|10.00|日期非法|N",
+                    "只有三列|a|b"), StandardCharsets.UTF_8);
+            final Storage badStorage = new Storage(badData.toString());
+            final java.util.concurrent.atomic.AtomicReference<List<Bill>> loaded =
+                    new java.util.concurrent.atomic.AtomicReference<List<Bill>>(
+                            new ArrayList<Bill>());
+            quietly(() -> { loaded.set(badStorage.load()); return true; });
+            eq("损坏行被跳过，合法行保留", 1, loaded.get().size());
+            eq("跳过行数计数正确", 4, badStorage.getLastSkippedLines());
+        } finally {
+            Files.deleteIfExists(badData);
+        }
+
+        // ---- 15. 金额上限：异常大的数字不能污染统计 ----
+        eq("金额超上限应拒绝", null, ImportResult.parseAmount("9999999999999.99"));
+        check("金额上限边界值仍可用", ImportResult.parseAmount("999999999999.99") != null);
+
+        // ---- 16. 导入合并：GUI 里"先记账再导入"不能把刚记的账冲掉 ----
+        List<Bill> manual = new ArrayList<Bill>();
+        manual.add(new Bill(9001, LocalDate.of(2026, 4, 1), "微信", "支出", "自检",
+                new BigDecimal("1.00"), "手动记账", false));
+        List<Bill> mergedManual = Storage.merge(manual, r.bills);
+        eq("合并后条数 = 原有 + 导入", r.bills.size() + 1, mergedManual.size());
+        check("合并后原有记录仍在", mergedManual.contains(manual.get(0)));
+        eq("同 id 不重复（导入数据不覆盖已有）", r.bills.size(),
+                Storage.merge(new ArrayList<Bill>(r.bills), r.bills).size());
+
         System.out.println("===== 自检结束：通过 " + passed + " 项，失败 " + failed + " 项 =====");
         if (failed > 0) System.exit(1);
+    }
+
+    /** 导入时 CsvImporter 可能打印编码提示，自检时吞掉，避免干扰输出 */
+    private static ImportResult quietlyImport(Path csv) throws IOException {
+        final ImportResult[] holder = new ImportResult[1];
+        final IOException[] err = new IOException[1];
+        quietly(() -> {
+            try {
+                holder[0] = new CsvImporter().importFile(csv.toString());
+            } catch (IOException e) {
+                err[0] = e;
+            }
+            return true;
+        });
+        if (err[0] != null) throw err[0];
+        return holder[0];
     }
 
     // ---------- 断言与工具 ----------
