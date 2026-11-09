@@ -91,9 +91,7 @@ public class BillQuery {
     }
 
     private static boolean contains(String text, String part) {
-        // 用 Locale.ROOT：土耳其语等区域会把 I 转成 ı，导致搜索匹配不上
-        return text != null && text.toLowerCase(java.util.Locale.ROOT)
-                .contains(part.toLowerCase(java.util.Locale.ROOT));
+        return text != null && text.toLowerCase().contains(part.toLowerCase());
     }
 
     private static String blankToNull(String v) {

@@ -30,9 +30,7 @@ public class Main {
             DateTimeFormatter.ofPattern("uuuu-M-d").withResolverStyle(ResolverStyle.STRICT);
 
     /** EOF/ Ctrl+D 信号：用于在任何输入点安全退出（保存后退出，不丢数据） */
-    private static final class EofSignal extends RuntimeException {
-        private static final long serialVersionUID = 1L;
-    }
+    private static final class EofSignal extends RuntimeException {}
 
     /** 退出时需要保存的上下文（仅 main 循环内赋值） */
     private static Storage storage;
@@ -342,10 +340,9 @@ public class Main {
     private static LocalDate readDate(String prompt) {
         while (true) {
             System.out.print(prompt);
-            String s = readLine().trim(); // EOF 必须在 try 之外：否则 EofSignal 会被 catch 吞掉造成死循环
             try {
-                return LocalDate.parse(s, IN_DATE);
-            } catch (java.time.format.DateTimeParseException e) {
+                return LocalDate.parse(readLine().trim(), IN_DATE);
+            } catch (Exception e) {
                 System.out.println("日期非法，请按 yyyy-M-d 输入（如 2026-4-1）。");
             }
         }
@@ -379,7 +376,7 @@ public class Main {
             if (s.isEmpty()) return null;
             try {
                 return LocalDate.parse(s, IN_DATE);
-            } catch (java.time.format.DateTimeParseException e) {
+            } catch (Exception e) {
                 System.out.println("日期非法，请按 yyyy-M-d 输入（如 2026-4-1），或回车跳过。");
             }
         }

@@ -25,8 +25,7 @@ import java.util.Map;
  */
 public final class Exporter {
 
-    /** 毫秒级时间戳：同一秒内连续导出两次也不会互相覆盖 */
-    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
+    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     /** UTF-8 BOM：Excel 靠它识别编码 */
     private static final String BOM = "\uFEFF";
 

@@ -1,17 +1,18 @@
 package com.accountbook;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 /**
  * 天气服务：桥接教师提供的 {@code WeatherKit}（加分项 9.1）。
  *
- * <p><b>职责边界</b>：本类<b>不发送任何网络请求</b>——全项目只有
- * {@code WeatherKit.java} 里出现 {@code java.net} / {@code HttpClient}，
- * 学生自己的类里一行网络代码都没有。本类只做四件事：
+ * <p><b>合规说明（重要）</b>：本类<b>不发送任何网络请求</b>，HTTP 连接、超时、JSON 解析、
+ * 错误码映射全部由教师提供的 {@code WeatherKit} 完成，一行未改。本类只做四件事：
  * <ol>
- *   <li>把 {@code config.properties} 的天气配置注入系统属性（供 WeatherKit 读取）；</li>
- *   <li>反射调用（教师的类在默认包，命名包不能直接 import 默认包类型）；</li>
+ *   <li>把 {@code config.properties} 里的天气配置注入系统属性（教师类的 3 个常量从系统属性取值，
+ *       默认值仍是教师原值），这是"配置"，不是"重写请求"；</li>
+ *   <li>反射调用（教师的类在默认包，命名包不能直接 import）；</li>
  *   <li>把 {@code ApiException} 统一转成一行中文提示，保证程序不崩、记账流程不中断；</li>
  *   <li>10 分钟结果缓存，减少调用次数、避免触发限流。</li>
  * </ol>
@@ -22,8 +23,8 @@ public final class WeatherService {
     private static final String KIT_CLASS = "WeatherKit";
     /** 缓存有效期：10 分钟 */
     private static final long CACHE_MILLIS = 10 * 60 * 1000L;
-    /** 教师类里 Key 的占位符：出现它就说明用户没填 */
-    private static final String KEY_PLACEHOLDER = "在此填入你的和风天气APIKey";
+    /** 已停服的公共域名（只能提示，不能再用；见和风天气 2025-04 公告） */
+    private static final String[] RETIRED_HOSTS = {"devapi.qweather.com", "geoapi.qweather.com", "api.qweather.com"};
 
     private static Config configRef;
     private static String cachedCity;
@@ -33,25 +34,38 @@ public final class WeatherService {
     private WeatherService() { }
 
     /**
-     * 注入天气配置（可重复调用，幂等）。
-     * 把 {@code weather.host} 拼成两个完整接口地址、把 {@code weather.key} 写进系统属性，
-     * WeatherKit 的静态常量从此取值。未填的项不覆盖（保持教师默认值）。
+     * 注入天气配置（可重复调用，幂等）。必须在 WeatherKit 类初始化之前执行，
+     * 因为它的三个常量是 static final，类初始化之后不再读取系统属性。
      */
     public static void install(Config config) {
         if (config != null) configRef = config;
         if (configRef == null) return;
         // 允许两种来源：config.properties，或启动参数 -Dqweather.host / -Dqweather.key
-        // （-D 优先，便于演示时临时指定而不改文件）
-        String host = normalizeHost(System.getProperty("qweather.host", configRef.getWeatherHost()));
-        // 显式指定了完整地址（-Dqweather.geo / -Dqweather.now）时以它为准，host 不再覆盖
-        if (!host.isEmpty() && System.getProperty("qweather.geo") == null) {
-            System.setProperty("qweather.geo", "https://" + host + "/geo/v2/city/lookup");
-            System.setProperty("qweather.now", "https://" + host + "/v7/weather/now");
-        }
+        String host = System.getProperty("qweather.host", configRef.getWeatherHost());
         String key = System.getProperty("qweather.key", configRef.getWeatherKey());
-        if (key != null && !key.trim().isEmpty()) {
-            System.setProperty("qweather.key", key.trim());
+        apply(host, key);
+    }
+
+    /** 把 host 拆成两个完整接口地址（教师类的两个地址常量从这里取值），并记录 Key */
+    private static void apply(String host, String key) {
+        String h = normalizeHost(host);
+        if (!h.isEmpty()) {
+            System.setProperty("qweather.host", h);
+            System.setProperty("qweather.geo", "https://" + h + "/geo/v2/city/lookup");
+            System.setProperty("qweather.now", "https://" + h + "/v7/weather/now");
         }
+        if (key != null && !key.trim().isEmpty()) System.setProperty("qweather.key", key.trim());
+    }
+
+    /** 配置里是否填了 API Key（只用于让提示更准确，不阻止调用） */
+    public static boolean keyConfigured() {
+        String k = System.getProperty("qweather.key", "");
+        return k != null && !k.trim().isEmpty();
+    }
+
+    /** 配置里是否填了专属 API Host */
+    public static boolean hostConfigured() {
+        return !normalizeHost(System.getProperty("qweather.host", "")).isEmpty();
     }
 
     /**
@@ -77,12 +91,16 @@ public final class WeatherService {
         }
         city = city.trim();
 
-        // 配置不全时不发无意义请求：否则要白等 5~8 秒超时，用户体验极差
-        String missing = missingConfig();
-        if (missing != null) {
-            return "未配置" + missing + "｜打开 out/config.properties 填写后重启程序"
-                    + "（Host 在控制台「设置 → API Host」，Key 在「项目管理 → 创建凭据」）"
-                    + "（不影响记账功能）";
+        // 和风天气 2026 年起全面停用公共域名，没有专属 API Host 一定返回 403/404。
+        // 与其干等 8 秒超时再报错，不如直接告诉使用者"缺什么、去哪儿拿"。
+        if (!hostConfigured() || isRetiredHost(System.getProperty("qweather.host", ""))) {
+            return "专属 API Host 缺失或已停服｜和风天气已停用公共域名（devapi/geoapi/api.qweather.com）；"
+                    + "请到控制台“设置 → API Host”复制形如 abcd1234.re.qweatherapi.com 的地址，"
+                    + "填入 config.properties 的 weather.host 后重启（不影响记账功能）";
+        }
+        if (!keyConfigured() && kitKeyIsPlaceholder()) {
+            return "未配置 API Key｜把控制台生成的 Key 填入 config.properties 的 weather.key 后重启"
+                    + "（图形界面可点右上角【刷新天气】重试；不影响记账功能）";
         }
 
         long now = System.currentTimeMillis();
@@ -101,9 +119,9 @@ public final class WeatherService {
             cachedAt = now;
             return text;
         } catch (ClassNotFoundException e) {
-            return "未找到 WeatherKit（请把教师提供的 WeatherKit.java 与源码一起编译）（不影响记账功能）";
+            return "未找到 WeatherKit（请把教师提供的 WeatherKit.java 与源码一起编译）";
         } catch (NoSuchMethodException e) {
-            return "WeatherKit 版本不匹配（缺少 now(String) 方法）（不影响记账功能）";
+            return "WeatherKit 版本不匹配（缺少 now(String) 方法）";
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause(); // ApiException 在这里
             String msg = cause == null ? null : cause.getMessage();
@@ -114,41 +132,25 @@ public final class WeatherService {
         }
     }
 
-    /**
-     * 检查配置是否齐全。
-     *
-     * @return null 表示齐全；否则返回缺什么（用于拼提示语）
-     */
-    private static String missingConfig() {
-        String host = System.getProperty("qweather.geo", "");
-        String key = System.getProperty("qweather.key", "");
-        boolean noHost = host.trim().isEmpty();
-        boolean noKey = key.trim().isEmpty() || KEY_PLACEHOLDER.equals(key.trim());
-        if (noHost && noKey) return " API Host 与 Key";
-        if (noHost) return " API Host（weather.host）";
-        if (noKey) return " API Key（weather.key）";
-        return null;
-    }
-
-    /** 失败文案统一收口：把状态码翻译成"发生了什么"，并指出修复路径 */
+    /** 失败文案统一收口：告诉使用者"下一步该做什么"，而不是甩一句 HTTP 状态码 */
     private static String hint(String prefix, String raw) {
         StringBuilder sb = new StringBuilder(prefix);
         String r = raw == null ? "" : raw;
-        if (r.contains("404")) {
-            sb.append("｜404：地址已下线，请确认 weather.host 是控制台「设置 → API Host」里的专属域名");
-        } else if (r.contains("403")) {
-            sb.append("｜403：Host 与 Key 不属于同一账号，或该 Key 无此接口权限");
+        String host = normalizeHost(System.getProperty("qweather.host", ""));
+
+        if (r.contains("403") || r.contains("Invalid Host")) {
+            sb.append("｜403：Host 与 Key 不属于同一账号，或当前网络/代理不被服务端接受"
+                    + "（先确认两者来自同一个控制台账号，再换手机热点重试）");
+        } else if (r.contains("404")) {
+            sb.append("｜404：地址已下线，请确认 weather.host 是控制台“设置 → API Host”里的专属域名");
         } else if (r.contains("401")) {
-            sb.append("｜401：Key 无效或复制不全，请到和风天气控制台重新复制");
-        } else if (r.contains("402")) {
-            sb.append("｜402：免费额度已用完，次日恢复");
+            sb.append("｜Key 无效：请到控制台核对 weather.key");
         } else if (r.contains("429")) {
-            sb.append("｜429：请求过频，稍后自动恢复（已有 10 分钟缓存）");
+            sb.append("｜请求过频，稍后自动恢复");
         } else if (r.contains("网络连接失败")) {
-            sb.append("｜请检查网络 / 代理 / 防火墙，或换手机热点重试");
-        } else if (r.contains("解压失败")) {
-            sb.append("｜响应解压失败，可能是网络中间设备改写了内容");
+            sb.append("｜请检查网络 / 代理 / 防火墙");
         }
+        if (!host.isEmpty()) sb.append("｜当前 host=").append(host);
         return sb.append("（不影响记账功能）").toString();
     }
 
@@ -159,7 +161,10 @@ public final class WeatherService {
         cachedAt = 0;
     }
 
-    /** 容错：使用者可能把 "https://xxxx.re.qweatherapi.com/" 整段粘进配置，这里统一剥成纯域名 */
+    /**
+     * 容错：使用者常把 "https://xxxx.re.qweatherapi.com/" 整段粘进来，
+     * 这里统一剥成纯域名，避免因为多一个斜杠就 403。
+     */
     private static String normalizeHost(String h) {
         String s = h == null ? "" : h.trim();
         if (s.isEmpty()) return "";
@@ -168,5 +173,29 @@ public final class WeatherService {
         int slash = s.indexOf('/');
         if (slash >= 0) s = s.substring(0, slash);
         return s.trim();
+    }
+
+    /** 提示用：填的 host 是否属于已停服的公共域名 */
+    public static boolean isRetiredHost(String h) {
+        String s = normalizeHost(h);
+        for (String r : RETIRED_HOSTS) if (r.equalsIgnoreCase(s)) return true;
+        return false;
+    }
+
+    /**
+     * 教师类里真正生效的 KEY 是否仍是占位符（反射读取，不改动教师类）。
+     * 读不到时返回 false，即不拦截，宁可请求失败也不误判。
+     */
+    private static boolean kitKeyIsPlaceholder() {
+        try {
+            Class<?> kit = Class.forName(KIT_CLASS);
+            Field f = kit.getDeclaredField("KEY");
+            f.setAccessible(true);
+            Object v = f.get(null);
+            String s = v == null ? "" : String.valueOf(v).trim();
+            return s.isEmpty() || s.contains("填入");
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

@@ -1,11 +1,11 @@
 package com.accountbook;
 
 import java.io.BufferedReader;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.math.BigDecimal;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,38 +20,20 @@ import java.util.Map;
  *  4. 类型不是"收入/支出"丢弃；
  *  5. 变体 B 去重：id 相同视为重复，保留文件中出现顺序靠后的一条；
  *  6. 所有丢弃逐行记录原因；空行静默跳过。
- *
- * <p>编码：优先 UTF-8，遇到 GBK 保存的文件自动回退（见 {@link TextIO}），不会整份变乱码。
  */
 public class CsvImporter {
-
-    /** 表头列名特征（中英文两套都认）：第一列不是数字且出现这些词，才判定为表头 */
-    private static final String[] HEADER_HINTS = {
-            "id", "date", "account", "type", "category", "amount", "note", "recurring",
-            "日期", "账户", "类型", "类别", "金额", "备注"};
 
     public ImportResult importFile(String path) throws IOException {
         ImportResult result = new ImportResult();
 
-        Charset cs = TextIO.detectCharset(Paths.get(path));
-        if (!StandardCharsets.UTF_8.equals(cs)) {
-            System.out.println("[提示] 检测到 " + path + " 不是 UTF-8 编码（应为 " + cs
-                    + "，常见于记事本/Excel 另存为 ANSI），已按 " + cs + " 读取，结果不受影响。");
-        }
-
-        try (BufferedReader reader = TextIO.newBufferedReader(Paths.get(path))) {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_8))) {
             String line;
             int lineNo = 0;
-            boolean headerChecked = false;
             while ((line = reader.readLine()) != null) {
                 lineNo++;
-                if (line.trim().isEmpty()) continue;       // 空行：静默跳过
-
-                // 表头只在第一行且确实含表头特征词时跳过
-                if (!headerChecked) {
-                    headerChecked = true;
-                    if (looksLikeHeader(line)) continue;
-                }
+                if (lineNo == 1) continue;                 // 表头
+                if (line.trim().isEmpty()) continue;       // 末尾空行：静默跳过
 
                 List<String> cols = splitCsvLine(line);
                 result.totalLines++;
@@ -98,11 +80,6 @@ public class CsvImporter {
                     result.addDiscard(lineNo, id, "类型非法（" + type + "）");
                     continue;
                 }
-                // 规则5（补充）：账户为空无法归属，按脏数据丢弃（否则会在余额表里多出一个空账户）
-                if (account.isEmpty()) {
-                    result.addDiscard(lineNo, id, "账户为空");
-                    continue;
-                }
                 boolean rec = "Y".equalsIgnoreCase(recurring);
                 result.bills.add(new Bill((int) idVal, date, account, type,
                         category, amount, note.trim(), rec));
@@ -114,51 +91,10 @@ public class CsvImporter {
         return result;
     }
 
-    /** 是否为表头行：第一列不是纯数字，且整行含至少一个表头特征词 */
-    private boolean looksLikeHeader(String line) {
-        List<String> cols = splitCsvLine(line);
-        if (cols.isEmpty()) return false;
-        String first = cols.get(0).trim();
-        if (first.matches("\\d+")) return false;   // 第一列是数字 -> 这是数据行，不能当表头吃掉
-        String lower = line.toLowerCase();
-        for (String hint : HEADER_HINTS) {
-            if (lower.contains(hint)) return true;
-        }
-        return false;
-    }
-
-    /**
-     * CSV 切分：支持 RFC4180 的双引号包裹字段（内部可含逗号、双写引号）。
-     * 本数据没有引号字段，走的就是"按逗号直切"这条路径，结果与直切一致；
-     * 但这样备注里带逗号的行也不会被误判成"列数=9"。
-     */
+    /** 简易 CSV 切分：本数据不含带引号字段，按逗号直切即可 */
     private List<String> splitCsvLine(String line) {
         List<String> cols = new ArrayList<>();
-        StringBuilder cur = new StringBuilder();
-        boolean inQuote = false;
-        for (int i = 0; i < line.length(); i++) {
-            char ch = line.charAt(i);
-            if (inQuote) {
-                if (ch == '"') {
-                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') {
-                        cur.append('"');   // 双写引号 -> 一个字面引号
-                        i++;
-                    } else {
-                        inQuote = false;
-                    }
-                } else {
-                    cur.append(ch);
-                }
-            } else if (ch == '"' && cur.length() == 0) {
-                inQuote = true;            // 字段以引号开头才进入引号模式
-            } else if (ch == ',') {
-                cols.add(cur.toString());
-                cur.setLength(0);
-            } else {
-                cur.append(ch);
-            }
-        }
-        cols.add(cur.toString());
+        for (String s : line.split(",", -1)) cols.add(s);
         return cols;
     }
 
@@ -167,8 +103,8 @@ public class CsvImporter {
      * 正向扫描 + 原位替换，保持文件顺序，消息按出现顺序输出。
      */
     private void dedupKeepLater(ImportResult result) {
-        Map<Integer, Integer> pos = new LinkedHashMap<Integer, Integer>(); // id -> kept 中下标
-        List<Bill> kept = new ArrayList<Bill>();
+        Map<Integer, Integer> pos = new LinkedHashMap<>(); // id -> kept 中下标
+        List<Bill> kept = new ArrayList<>();
         for (Bill b : result.bills) {
             Integer prev = pos.get(b.getId());
             if (prev == null) {
