@@ -31,13 +31,17 @@ public class ImportResult {
         System.out.println("最终有效账单: " + bills.size() + " 条");
     }
 
+    /** 金额上限：超过一万亿基本不可能是正常记账，按非法处理（防止异常数据把统计撑爆） */
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("999999999999.99");
+
     /** 简单校验用：金额是否为合法非负数字（最多两位小数） */
     public static BigDecimal parseAmount(String s) {
         if (s == null || s.isEmpty()) return null;
         String t = s.trim();
         if (!t.matches("\\d+(\\.\\d{1,2})?")) return null; // 拒绝负数、非数字、超两位小数
         try {
-            return new BigDecimal(t);
+            BigDecimal v = new BigDecimal(t);
+            return v.compareTo(MAX_AMOUNT) > 0 ? null : v;
         } catch (NumberFormatException e) {
             return null;
         }

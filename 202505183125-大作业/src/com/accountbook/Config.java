@@ -1,19 +1,19 @@
 package com.accountbook;
 
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 import java.util.Properties;
 
 /** 配置文件：学号、水印、数据文件路径均外置，禁止硬编码 */
 public class Config {
-    private final Properties props = new Properties();
+    private final Properties props;
 
+    /**
+     * @param path 配置文件路径（UTF-8 或 GBK 保存都能读，见 {@link TextIO}）
+     * @throws IOException 文件不存在或不可读
+     */
     public Config(String path) throws IOException {
-        try (FileInputStream in = new FileInputStream(path)) {
-            props.load(new InputStreamReader(in, StandardCharsets.UTF_8));
-        }
+        this.props = TextIO.readProperties(Paths.get(path));
     }
 
     public String get(String key) { return props.getProperty(key); }

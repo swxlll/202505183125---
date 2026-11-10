@@ -53,7 +53,7 @@ public class Storage {
                     w.write(String.join("|",
                             String.valueOf(b.getId()), b.getDate().toString(), b.getAccount(),
                             b.getType(), b.getCategory(), b.getAmount().toPlainString(),
-                            b.getNote().replace("|", "/"), b.isRecurring() ? "Y" : "N"));
+                            clean(b.getNote()), b.isRecurring() ? "Y" : "N"));
                     w.newLine();
                 }
             }
@@ -90,7 +90,7 @@ public class Storage {
         Path p = Paths.get(path);
         if (!Files.exists(p)) return bills;
 
-        try (BufferedReader r = Files.newBufferedReader(p, StandardCharsets.UTF_8)) {
+        try (BufferedReader r = TextIO.newBufferedReader(p)) {
             String line;
             int lineNo = 0;
             while ((line = r.readLine()) != null) {
@@ -101,8 +101,13 @@ public class Storage {
                     if (c.length != 8) throw new IllegalArgumentException("列数=" + c.length);
                     LocalDate d = DateUtil.parse(c[1]);
                     if (d == null) throw new IllegalArgumentException("日期非法");
-                    bills.add(new Bill(Integer.parseInt(c[0]), d, c[2], c[3], c[4],
-                            new BigDecimal(c[5]), c[6], "Y".equals(c[7])));
+                    if (!"收入".equals(c[3]) && !"支出".equals(c[3])) {
+                        throw new IllegalArgumentException("类型非法（" + c[3] + "）");
+                    }
+                    BigDecimal amt = new BigDecimal(c[5]);
+                    if (amt.signum() < 0) throw new IllegalArgumentException("金额为负（" + c[5] + "）");
+                    bills.add(new Bill(Integer.parseInt(c[0]), d, c[2], c[3], c[4], amt, c[6],
+                            "Y".equals(c[7])));
                 } catch (RuntimeException e) {
                     lastSkippedLines++;
                     System.out.println("[警告] 数据文件第 " + lineNo + " 行损坏，已跳过（"
@@ -117,6 +122,12 @@ public class Storage {
             System.out.println("[提示] 共跳过 " + lastSkippedLines + " 行损坏数据，其余记录已正常加载。");
         }
         return bills;
+    }
+
+    /** 字段清洗：竖线是分隔符、换行会破坏"一行一条"的约定，统一替换掉（否则回读行数校验会失败） */
+    private static String clean(String s) {
+        if (s == null) return "";
+        return s.replace('|', '/').replace('\r', ' ').replace('\n', ' ');
     }
 
     /** 读取失败时提示备份文件是否存在（不自动覆盖，交由使用者决定） */
