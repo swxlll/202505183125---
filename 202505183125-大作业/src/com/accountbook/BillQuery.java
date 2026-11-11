@@ -34,6 +34,7 @@ public class BillQuery {
     public BillQuery search(String v)   { this.search   = blankToNull(v); return this; }
 
     /** 日期区间：起止任一可为 null（表示该端不限）；两者都有且起 > 止时交换，避免用户填反查不到数据 */
+    
     public BillQuery range(LocalDate from, LocalDate to) {
         if (from != null && to != null && from.isAfter(to)) {
             LocalDate t = from; from = to; to = t;
@@ -49,7 +50,7 @@ public class BillQuery {
     }
 
     /** 单条账单是否命中全部条件（各条件之间是"与"关系） */
-    public boolean matches(Bill b) {
+    public boolean (Bill b) {
         if (account != null && !account.equals(b.getAccount())) return false;
         if (type != null && !type.equals(b.getType())) return false;
         if (category != null && !contains(b.getCategory(), category)) return false;
@@ -58,6 +59,7 @@ public class BillQuery {
                 || contains(b.getAccount(), search))) return false;
         if (from != null && b.getDate().isBefore(from)) return false;
         if (to != null && b.getDate().isAfter(to)) return false;
+        
         return true;
     }
 

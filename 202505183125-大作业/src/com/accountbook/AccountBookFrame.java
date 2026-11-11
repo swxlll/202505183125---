@@ -649,8 +649,11 @@ public final class AccountBookFrame extends JFrame {
      * @return true 表示正常打开并关闭（调用方应重新加载数据）；false 表示无图形环境等原因未能打开
      */
     public static boolean show(final Config config, final Storage storage) {
-        if (GraphicsEnvironment.isHeadless()) {
-            System.out.println("[提示] 当前环境没有图形界面（headless），无法打开窗口；"
+        // isHeadless() 只判断 DISPLAY 有没有设置；DISPLAY 设了但 X 服务器连不上时它返回 false，
+        // 随后创建窗口会抛 AWTError（Error，catch Exception 接不住）直接把整个程序带崩。
+        // 所以先做一次真实探测，失败就退回控制台，绝不让菜单 9 变成"崩溃按钮"。
+        if (!graphicsAvailable()) {
+            System.out.println("[提示] 当前环境无法打开图形界面（没有桌面，或 DISPLAY 指向的 X 服务器连不上）；"
                     + "控制台功能仍可正常使用。");
             return false;
         }
@@ -660,6 +663,10 @@ public final class AccountBookFrame extends JFrame {
             // 使用默认外观即可
         }
 
+        // 必须在 setLookAndFeel 之后、创建任何组件之前设置字体：
+        // 精简 Linux / WSL 常常没有中文字体，不处理的话整个窗口的中文都是方框
+        FontSetup.install();
+
         final AccountBookFrame[] ref = new AccountBookFrame[1];
         try {
             SwingUtilities.invokeAndWait(() -> {
@@ -668,7 +675,7 @@ public final class AccountBookFrame extends JFrame {
                 f.setVisible(true);
                 ref[0] = f;
             });
-        } catch (Exception e) {
+        } catch (Throwable e) { // 含 AWTError 这类 Error
             System.out.println("[错误] 图形界面启动失败："
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
             return false;
@@ -677,6 +684,17 @@ public final class AccountBookFrame extends JFrame {
 
         ref[0].awaitClosed(); // 阻塞主线程，直到用户关掉窗口
         return true;
+    }
+
+    /** 图形环境是否真的可用：能拿到 GraphicsEnvironment 才算可用 */
+    private static boolean graphicsAvailable() {
+        if (GraphicsEnvironment.isHeadless()) return false;
+        try {
+            GraphicsEnvironment.getLocalGraphicsEnvironment();
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private final CountDownLatch closedLatch = new CountDownLatch(1);

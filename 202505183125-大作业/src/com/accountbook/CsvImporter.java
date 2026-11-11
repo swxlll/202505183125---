@@ -33,7 +33,7 @@ public class CsvImporter {
     public ImportResult importFile(String path) throws IOException {
         ImportResult result = new ImportResult();
 
-        Charset cs = TextIO.detectCharset(Paths.get(path));//先探编码
+        Charset cs = TextIO.detectCharset(Paths.get(path));
         if (!StandardCharsets.UTF_8.equals(cs)) {
             System.out.println("[提示] 检测到 " + path + " 不是 UTF-8 编码（应为 " + cs
                     + "，常见于记事本/Excel 另存为 ANSI），已按 " + cs + " 读取，结果不受影响。");

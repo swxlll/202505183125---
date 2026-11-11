@@ -39,6 +39,14 @@ public class Main {
     private static List<Bill> bills;
 
     public static void main(String[] args) {
+        // 诊断入口：java -jar accountbook.jar --fonts
+        // 用来排查"图形界面中文全是方框"这类环境问题，不影响正常启动
+        if (args != null && args.length > 0 && "--fonts".equals(args[0])) {
+            System.setOut(makeOut());
+            FontSetup.printAvailable();
+            return;
+        }
+
         // 控制台编码自适应：Windows cmd 默认 GBK(936)，Linux/macOS 默认 UTF-8。
         // 优先使用启动参数 -Dstdout.encoding=xxx 指定的编码，其次按操作系统选择，
         // 避免"强制 UTF-8 输出到 GBK 控制台"导致的乱码。
@@ -214,6 +222,7 @@ public class Main {
         System.out.println("----- 账单筛选（直接回车 = 不限制）-----");
         int a = readIntAllowEmpty("账户(1微信 2支付宝 3校园卡 4银行卡 0全部): ", 0, 4);
         if (a >= 1) q.account(ACCOUNTS[a - 1]);
+        
         int t = readIntAllowEmpty("类型(1收入 2支出 0全部): ", 0, 2);
         if (t >= 1) q.type(TYPES[t - 1]);
         String c = readLineAllowEmpty("类别关键字(回车跳过): ");

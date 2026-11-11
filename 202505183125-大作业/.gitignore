@@ -1,4 +1,8 @@
 *.class
 out/classes/
 bills.dat.txt
+bills.dat.txt.bak
+bills.dat.txt.tmp
 *.log
+账单明细-*.csv
+统计汇总-*.csv
